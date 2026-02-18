@@ -2061,8 +2061,17 @@ elif page == "🤖 AI Generator":
                     # Initialize
                     update_progress(10, "🔄 Initializing AI model...")
                     time.sleep(0.5)
+
+                    safe_clean_data, safe_epochs, safe_batch_size, safe_num_rows, safe_notes = _safe_generation_config(
+                        algorithm, clean_data, epochs, batch_size, num_rows
+                    )
+                    if safe_notes:
+                        st.info(f"Cloud-safe adjustments applied: {safe_notes}")
+                    if safe_clean_data.empty or len(safe_clean_data.columns) == 0:
+                        st.error("❌ Preprocessing ke baad data empty ho gaya. Missing strategy/features change karein.")
+                        st.stop()
                     
-                    metadata = Metadata.detect_from_dataframe(clean_data, table_name='synthetic_table')
+                    metadata = Metadata.detect_from_dataframe(safe_clean_data, table_name='synthetic_table')
                     metadata_path = os.path.join("database", "synthetic_table_metadata.json")
                     os.makedirs("database", exist_ok=True)
                     metadata.save_to_json(metadata_path)
@@ -2071,9 +2080,13 @@ elif page == "🤖 AI Generator":
                     algo_name = algorithm.split(" - ")[0]
                     
                     if "CTGAN" in algorithm:
-                        synthesizer = CTGANSynthesizer(metadata, epochs=epochs, batch_size=batch_size, verbose=False)
+                        synthesizer = CTGANSynthesizer(
+                            metadata, epochs=safe_epochs, batch_size=safe_batch_size, verbose=False
+                        )
                     elif "TVAE" in algorithm:
-                        synthesizer = TVAESynthesizer(metadata, epochs=epochs, batch_size=batch_size, verbose=False)
+                        synthesizer = TVAESynthesizer(
+                            metadata, epochs=safe_epochs, batch_size=safe_batch_size, verbose=False
+                        )
                     else:
                         synthesizer = GaussianCopulaSynthesizer(metadata)
                     
@@ -2081,15 +2094,15 @@ elif page == "🤖 AI Generator":
                     time.sleep(0.3)
                     
                     # Training
-                    update_progress(40, f"🔄 Training {algo_name}... ({epochs} epochs)")
-                    synthesizer.fit(clean_data)
+                    update_progress(40, f"🔄 Training {algo_name}... ({safe_epochs} epochs)")
+                    synthesizer.fit(safe_clean_data)
                     
                     update_progress(70, "✅ Training complete")
                     time.sleep(0.3)
                     
                     # Generation
-                    update_progress(85, f"🔄 Generating {num_rows:,} synthetic records...")
-                    synthetic_data = synthesizer.sample(num_rows=num_rows)
+                    update_progress(85, f"🔄 Generating {safe_num_rows:,} synthetic records...")
+                    synthetic_data = synthesizer.sample(num_rows=safe_num_rows)
                     
                     # Add back removed columns
                     for col in columns_removed:
@@ -2109,8 +2122,8 @@ elif page == "🤖 AI Generator":
                     st.session_state.history.append({
                         'timestamp': datetime.now(),
                         'algorithm': algo_name,
-                        'rows': num_rows,
-                        'epochs': epochs,
+                        'rows': safe_num_rows,
+                        'epochs': safe_epochs,
                         'columns': len(synthetic_data.columns)
                     })
                     
@@ -2121,7 +2134,7 @@ elif page == "🤖 AI Generator":
                     
                     st.markdown(f"""
                     <div class='alert-success'>
-                        🎉 <b>Success!</b> Generated {num_rows:,} high-quality synthetic records!
+                        🎉 <b>Success!</b> Generated {safe_num_rows:,} high-quality synthetic records!
                     </div>
                     """, unsafe_allow_html=True)
                     
@@ -2189,9 +2202,9 @@ elif page == "🤖 AI Generator":
 
                     run_config = {
                         "algorithm": algorithm,
-                        "epochs": epochs,
-                        "batch_size": batch_size,
-                        "num_rows": num_rows,
+                        "epochs": safe_epochs,
+                        "batch_size": safe_batch_size,
+                        "num_rows": safe_num_rows,
                         "privacy_level": privacy_level,
                         "quality_threshold": quality_threshold
                     }
