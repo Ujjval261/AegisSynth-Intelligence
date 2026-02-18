@@ -435,6 +435,75 @@ def _build_run_report(profile: dict, selected_columns: list, config: dict, outpu
     return "\n".join(lines)
 
 
+def _render_quality_table(type_df: pd.DataFrame) -> None:
+    try:
+        st.dataframe(
+            type_df.style.background_gradient(subset=['Missing %'], cmap='Reds')
+            .background_gradient(subset=['Unique %'], cmap='Blues'),
+            width='stretch',
+            height=400
+        )
+    except Exception as exc:
+        if "background_gradient requires matplotlib" in str(exc):
+            st.info("Detailed color gradients disabled: install `matplotlib` in requirements.txt.")
+            st.dataframe(type_df, width='stretch', height=400)
+        else:
+            raise
+
+
+def _safe_generation_config(
+    algorithm: str,
+    clean_data: pd.DataFrame,
+    epochs: int,
+    batch_size: int,
+    num_rows: int
+) -> tuple[pd.DataFrame, int, int, int, str]:
+    safe_data = clean_data
+    safe_epochs = int(epochs)
+    safe_batch = int(batch_size)
+    safe_rows = int(num_rows)
+    notes = []
+
+    if ("CTGAN" in algorithm or "TVAE" in algorithm) and len(clean_data) > 5000:
+        safe_data = clean_data.sample(5000, random_state=42)
+        notes.append("Training data sampled to 5,000 rows for cloud stability.")
+
+    if "CTGAN" in algorithm or "TVAE" in algorithm:
+        if safe_epochs > 150:
+            safe_epochs = 150
+            notes.append("Epochs capped at 150 to reduce memory/time crashes.")
+        if safe_batch > 300:
+            safe_batch = 300
+            notes.append("Batch size capped at 300 for safer execution.")
+        if safe_rows > 5000:
+            safe_rows = 5000
+            notes.append("Synthetic output rows capped at 5,000 in cloud-safe mode.")
+
+    safe_batch = max(50, min(safe_batch, max(len(safe_data), 1)))
+    return safe_data, safe_epochs, safe_batch, safe_rows, " ".join(notes)
+
+
+def _apply_ui_preset(algorithm: str, epochs: int, batch_size: int, num_rows: int) -> None:
+    st.session_state.ui_algorithm = algorithm
+    st.session_state.ui_epochs = epochs
+    st.session_state.ui_batch_size = batch_size
+    st.session_state.ui_num_rows = num_rows
+
+
+def _apply_autotune_from_current_data() -> None:
+    if st.session_state.real_data is None:
+        return
+    profile = _dataset_profile(st.session_state.real_data)
+    recommended = _heuristic_generation_plan(profile, st.session_state.ui_privacy_level)
+    _apply_ui_preset(
+        recommended["algorithm"],
+        recommended["epochs"],
+        recommended["batch_size"],
+        recommended["num_rows"]
+    )
+    st.session_state.autotune_applied = True
+
+
 if not st.session_state.authenticated:
     st.markdown("""
     <style>
@@ -1271,34 +1340,33 @@ with st.sidebar:
     st.markdown("---")
     st.markdown("### ⚡ Smart Presets")
     p1, p2, p3 = st.columns(3)
-    if p1.button("Fast", width='stretch'):
-        st.session_state.ui_algorithm = "TVAE - Fast Training"
-        st.session_state.ui_epochs = 100
-        st.session_state.ui_batch_size = 400
-        st.session_state.ui_num_rows = 1000
-        st.rerun()
-    if p2.button("Balanced", width='stretch'):
-        st.session_state.ui_algorithm = "CTGAN - Best Quality"
-        st.session_state.ui_epochs = 175
-        st.session_state.ui_batch_size = 500
-        st.session_state.ui_num_rows = 2000
-        st.rerun()
-    if p3.button("Max", width='stretch'):
-        st.session_state.ui_algorithm = "CTGAN - Best Quality"
-        st.session_state.ui_epochs = 300
-        st.session_state.ui_batch_size = 700
-        st.session_state.ui_num_rows = 5000
-        st.rerun()
+    p1.button(
+        "Fast",
+        width='stretch',
+        on_click=_apply_ui_preset,
+        args=("TVAE - Fast Training", 100, 400, 1000)
+    )
+    p2.button(
+        "Balanced",
+        width='stretch',
+        on_click=_apply_ui_preset,
+        args=("CTGAN - Best Quality", 175, 500, 2000)
+    )
+    p3.button(
+        "Max",
+        width='stretch',
+        on_click=_apply_ui_preset,
+        args=("CTGAN - Best Quality", 300, 700, 5000)
+    )
 
-    if st.button("🧠 Auto-Tune from Dataset", width='stretch', disabled=st.session_state.real_data is None):
-        profile = _dataset_profile(st.session_state.real_data)
-        recommended = _heuristic_generation_plan(profile, st.session_state.ui_privacy_level)
-        st.session_state.ui_algorithm = recommended["algorithm"]
-        st.session_state.ui_epochs = recommended["epochs"]
-        st.session_state.ui_batch_size = recommended["batch_size"]
-        st.session_state.ui_num_rows = recommended["num_rows"]
+    st.button(
+        "🧠 Auto-Tune from Dataset",
+        width='stretch',
+        disabled=st.session_state.real_data is None,
+        on_click=_apply_autotune_from_current_data
+    )
+    if st.session_state.pop("autotune_applied", False):
         st.success("Applied recommended settings")
-        st.rerun()
     
     st.markdown("---")
     
@@ -1502,12 +1570,7 @@ if page == "🏠 Home":
                             'Unique %': unique_pct_rounded
                         })
                         
-                        st.dataframe(
-                            type_df.style.background_gradient(subset=['Missing %'], cmap='Reds')
-                            .background_gradient(subset=['Unique %'], cmap='Blues'),
-                            width='stretch',
-                            height=400
-                        )
+                        _render_quality_table(type_df)
                     
                     # Quick Insights
                     st.markdown("<h3 class='section-header'>📈 Quick Insights</h3>", unsafe_allow_html=True)
@@ -1866,13 +1929,17 @@ elif page == "🤖 AI Generator":
                     else:
                         st.session_state.copilot_plan = "\n".join([f"- {item}" for item in configured_plan["reasons"]])
             with c2:
-                if st.button("Apply Auto-Tune", width='stretch'):
-                    st.session_state.ui_algorithm = configured_plan["algorithm"]
-                    st.session_state.ui_epochs = configured_plan["epochs"]
-                    st.session_state.ui_batch_size = configured_plan["batch_size"]
-                    st.session_state.ui_num_rows = configured_plan["num_rows"]
-                    st.success("Auto-tuned settings applied")
-                    st.rerun()
+                st.button(
+                    "Apply Auto-Tune",
+                    width='stretch',
+                    on_click=_apply_ui_preset,
+                    args=(
+                        configured_plan["algorithm"],
+                        configured_plan["epochs"],
+                        configured_plan["batch_size"],
+                        configured_plan["num_rows"]
+                    )
+                )
 
             if st.session_state.copilot_plan:
                 st.code(st.session_state.copilot_plan, language="markdown")
