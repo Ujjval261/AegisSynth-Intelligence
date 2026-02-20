@@ -457,6 +457,30 @@ def _render_quality_table(type_df: pd.DataFrame) -> None:
             raise
 
 
+def _is_cloud_runtime() -> bool:
+    if (
+        os.getenv("STREAMLIT_SHARING_MODE")
+        or os.getenv("IS_STREAMLIT_CLOUD")
+        or os.getenv("STREAMLIT_RUNTIME")
+        or os.getenv("STREAMLIT_CLOUD")
+    ):
+        return True
+
+    cwd = os.getcwd().lower().replace("\\", "/")
+    if "/mount/src" in cwd:
+        return True
+
+    home_dir = str(os.getenv("HOME", "")).lower().replace("\\", "/")
+    if "/home/adminuser" in home_dir:
+        return True
+
+    host = str(os.getenv("HOSTNAME", "")).lower()
+    if "streamlit" in host:
+        return True
+
+    return False
+
+
 def _safe_generation_config(
     algorithm: str,
     clean_data: pd.DataFrame,
@@ -476,7 +500,7 @@ def _safe_generation_config(
     )
 
     if "CTGAN" in algorithm or "TVAE" in algorithm:
-        max_train_rows = 3000 if is_cloud else 5000
+        max_train_rows = 1500 if is_cloud else 5000
         cat_cols = safe_data.select_dtypes(include=["object", "category"]).columns.tolist()
 
         # Convert date-like text columns to datetime so they are not treated as huge categorical domains.
@@ -510,7 +534,7 @@ def _safe_generation_config(
             )
 
         cat_cols = safe_data.select_dtypes(include=["object", "category"]).columns.tolist()
-        max_cat_unique = 120 if is_cloud else 180
+        max_cat_unique = 80 if is_cloud else 180
         high_card_cols = [
             col for col in cat_cols
             if len(safe_data) > 0 and (
@@ -527,8 +551,8 @@ def _safe_generation_config(
             )
 
         if len(safe_data.select_dtypes(include=["object", "category"]).columns) > 14:
-            safe_rows = min(safe_rows, 1500 if is_cloud else 2500)
-            safe_epochs = min(safe_epochs, 60 if is_cloud else 90)
+            safe_rows = min(safe_rows, 1200 if is_cloud else 2500)
+            safe_epochs = min(safe_epochs, 40 if is_cloud else 90)
             notes.append("Dense categorical schema detected; reduced rows/epochs for stable generation.")
 
         if len(safe_data.columns) > 35:
@@ -540,12 +564,12 @@ def _safe_generation_config(
             notes.append(f"Training data sampled to {max_train_rows:,} rows for stability.")
 
     if "CTGAN" in algorithm or "TVAE" in algorithm:
-        max_epochs = 80 if is_cloud else 120
-        max_batch = 128 if is_cloud else 200
-        max_rows = 3000 if is_cloud else 5000
+        max_epochs = 40 if is_cloud else 120
+        max_batch = 64 if is_cloud else 200
+        max_rows = 1500 if is_cloud else 5000
         if len(safe_data.columns) > 35:
-            max_rows = min(max_rows, 2000)
-            max_batch = min(max_batch, 96)
+            max_rows = min(max_rows, 1000)
+            max_batch = min(max_batch, 48)
         if safe_epochs > max_epochs:
             safe_epochs = max_epochs
             notes.append(f"Epochs capped at {max_epochs} for stable training.")
@@ -563,6 +587,7 @@ def _safe_generation_config(
 def _select_runtime_algorithm(algorithm: str, safe_data: pd.DataFrame) -> tuple[str, str]:
     if not ("CTGAN" in algorithm or "TVAE" in algorithm):
         return algorithm, ""
+    is_cloud = _is_cloud_runtime()
     rows = len(safe_data)
     cols = len(safe_data.columns)
     high_card_cols = [
@@ -572,6 +597,10 @@ def _select_runtime_algorithm(algorithm: str, safe_data: pd.DataFrame) -> tuple[
             or (safe_data[col].nunique(dropna=True) / max(rows, 1)) > 0.18
         )
     ]
+    if is_cloud and (rows > 1800 or cols > 25 or len(high_card_cols) > 2):
+        return "GaussianCopula - Statistical", (
+            "Cloud-safe runtime switched to GaussianCopula to avoid memory/time crashes."
+        )
     if cols > 45 or len(high_card_cols) > 6:
         return "GaussianCopula - Statistical", (
             "Runtime switched to GaussianCopula due to very high dimensional/high-cardinality dataset."
@@ -2718,8 +2747,11 @@ elif page == "🤖 AI Generator":
                             token in fit_error_msg
                             for token in ["out of memory", "oom", "cuda", "killed", "allocation", "memoryerror"]
                         )
-                        if oom_like and "GaussianCopula" not in runtime_algorithm:
-                            st.warning("Heavy model training failed due to memory pressure. Retrying with GaussianCopula.")
+                        if "GaussianCopula" not in runtime_algorithm:
+                            if oom_like:
+                                st.warning("Heavy model training failed due to memory pressure. Retrying with GaussianCopula.")
+                            else:
+                                st.warning("Model training failed on current runtime. Retrying with GaussianCopula.")
                             runtime_algorithm = "GaussianCopula - Statistical"
                             algo_name = "GaussianCopula"
                             synthesizer = GaussianCopulaSynthesizer(metadata)
