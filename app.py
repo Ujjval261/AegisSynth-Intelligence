@@ -1,4 +1,4 @@
-﻿# app.py
+# app.py
 # Professional Synthetic Data Generation Platform
 # Built by Ujjval Dwivedi
 
@@ -22,6 +22,7 @@ from datetime import datetime, timezone
 import time
 import os
 import re
+import warnings
 from pathlib import Path
 from urllib.request import Request, urlopen
 from urllib.error import HTTPError
@@ -484,7 +485,19 @@ def _safe_generation_config(
             series = safe_data[col]
             if series.dropna().empty:
                 continue
-            parsed = pd.to_datetime(series, errors="coerce")
+            probe = series.dropna().astype(str).str.strip().head(120)
+            if probe.empty:
+                continue
+            likely_datetime = (
+                probe.str.contains(r"[-/:]", regex=True).mean() >= 0.85
+                and probe.str.contains(r"\d", regex=True).mean() >= 0.95
+            ) or ("date" in col.lower() or "time" in col.lower())
+            if not likely_datetime:
+                continue
+
+            with warnings.catch_warnings():
+                warnings.filterwarnings("ignore", message="Could not infer format")
+                parsed = pd.to_datetime(series, errors="coerce", format="mixed")
             parse_ratio = parsed.notna().mean()
             if parse_ratio >= 0.9 and series.nunique(dropna=True) > 20:
                 safe_data[col] = parsed
